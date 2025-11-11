@@ -17,12 +17,11 @@ const v1SwaggerOptions: swaggerJSDoc.Options = {
             },
         },
         tags: [
-            { name: "Authentication", description: "Authentication & Authorization endpoints" },
-            { name: "Api", description: "Generic endpoints" }
+            { name: "Authentication", description: "Authentication & Authorization endpoints" }
         ],
         servers: [
-            { url: process.env.V1_DEVELOPMENT_URL || 'http://localhost:3000/api/v1', description: 'Development (v1)' },
-            { url: process.env.V1_STAGING_URL || 'https://jewel360.digitaljewels.net/api/v1', description: 'Staging (v1)' },
+            { url: process.env.DEVELOPMENT_URL || 'http://localhost:3000/api', description: 'Development (v1)' },
+            { url: process.env.STAGING_URL || 'https://floatstack.com/api', description: 'Staging (v1)' },
         ],
         components: {
             schemas: {
@@ -55,8 +54,8 @@ const v1SwaggerOptions: swaggerJSDoc.Options = {
         },
     },
     apis: [
-        './src/modules/v1/**/*.{ts,js}',
-        './dist/modules/v1/**/*.js'      // For Docker container
+        './src/modules/**/*.{ts,js}',
+        './dist/modules/**/*.js'      // For Docker container
     ],
 };
 

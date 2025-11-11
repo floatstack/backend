@@ -42,7 +42,7 @@ app.use(
 );
 
 
-
+debugSwaggerFiles();
 
 // Optional: Serve raw swagger JSON
 app.get('/api-docs.json', (req, res) => {

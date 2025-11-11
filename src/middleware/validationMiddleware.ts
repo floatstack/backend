@@ -4,7 +4,7 @@ import Joi from 'joi';
 import sanitizeHtml from 'sanitize-html';
 import { errorResponse } from '../utils/response.js';
 
-export interface DJLRequest extends Request {
+export interface UserRequest extends Request {
     payload?: any;
     user?: { user_id: string; permissions: string[] };
 }
@@ -54,6 +54,6 @@ export const validateRequestBody =
                 return acc;
             }, {} as { [key: string]: any });
 
-            (req as DJLRequest).payload = sanitizedValue;
+            (req as UserRequest).payload = sanitizedValue;
             return next();
         };

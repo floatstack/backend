@@ -10,6 +10,377 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
+}
+
+model Bank {
+  id                    String     @id @db.VarChar(36)
+  name                  String     @db.VarChar(100)
+  slug                  String     @unique @db.VarChar(50)
+  status                BankStatus @default(onboarding)
+  webhook_url           String?    @db.VarChar(255)
+  webhook_secret        String?    @db.VarChar(128)
+  atm_api_url           String?    @db.VarChar(255)
+  atm_api_key_encrypted Bytes?     @db.VarBinary(512)
+  created_at            DateTime   @default(now()) @db.Timestamp(6)
+  updated_at            DateTime   @updatedAt @db.Timestamp(6)
+
+  config             BankConfig?
+  agents             Agent[]
+  transaction_logs   TransactionLog[]
+  atms               BankATM[]         @relation("BankATMs")
+  refill_events      RefillEvent[]
+  smart_pull_queue   SmartPullQueue[]
+  webhook_deliveries WebhookDelivery[]
+  users              User[]            @relation("UserBank")
+  audit_logs         AuditLog[]
+  domains            BankDomain[]
+
+  @@map("banks")
+}
+
+model BankConfig {
+  bank_id        String  @id @db.VarChar(36)
+  threshold_low  Decimal @default(0.7000) @db.Decimal(5, 4)
+  threshold_high Decimal @default(1.3000) @db.Decimal(5, 4)
+  branding       Json?
+
+  bank Bank @relation(fields: [bank_id], references: [id], onDelete: Cascade)
+
+  @@map("bank_configs")
+}
+
+model Agent {
+  id             String               @id @db.VarChar(36)
+  bank_id        String               @db.VarChar(36)
+  agent_id       String               @db.VarChar(50)
+  terminal_id    String               @db.VarChar(50)
+  full_name      String?              @db.VarChar(150)
+  nin            String?              @db.VarChar(11)
+  bvn            String?              @db.VarChar(11)
+  work_location  Unsupported("POINT") // Handled via raw SQL
+  work_address   String?              @db.VarChar(255)
+  assigned_limit Decimal              @db.Decimal(15, 2)
+  onboarded_via  OnboardedVia
+  status         AgentStatus          @default(active)
+  last_active_at DateTime?            @db.DateTime
+  created_at     DateTime             @default(now()) @db.Timestamp(6)
+  updated_at     DateTime             @updatedAt @db.Timestamp(6)
+
+  bank             Bank                @relation(fields: [bank_id], references: [id])
+  transaction_logs TransactionLog[]
+  refill_events    RefillEvent[]
+  float_snapshots  AgentFloatSnapshot? @relation("AgentFloat")
+  otp_reservations OtpReservation[]
+  atm_feedback     AtmFeedback[]
+  users            User[]              @relation("UserAgent")
+  smart_pull_queue SmartPullQueue?     @relation("SmartPullAgent")
+  audit_logs       AuditLog[]          @relation("AuditLogAgent")
+
+  @@index([bank_id, status])
+  @@index([terminal_id])
+  @@index([bank_id, agent_id])
+  @@map("agents")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  created_at  DateTime @default(now()) @db.Timestamp(6)
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id            String     @id @db.VarChar(36)
+  bank_id       String?    @db.VarChar(36)
+  agent_id      String?    @db.VarChar(36)
+  role_id       Int
+  email         String     @unique @db.VarChar(255)
+  password_hash Bytes?     @db.VarBinary(60)
+  status        UserStatus @default(pending)
+  last_login_at DateTime?  @db.DateTime
+  created_at    DateTime   @default(now()) @db.Timestamp(6)
+
+  bank  Bank?  @relation("UserBank", fields: [bank_id], references: [id])
+  agent Agent? @relation("UserAgent", fields: [agent_id], references: [id])
+  role  Role   @relation(fields: [role_id], references: [id])
+
+  @@index([email])
+  @@index([bank_id, role_id])
+  @@index([agent_id])
+  @@map("users")
+}
+
+model TransactionLog {
+  id           BigInt   @id @default(autoincrement())
+  bank_id      String   @db.VarChar(36)
+  agent_id     String   @db.VarChar(36)
+  terminal_id  String?  @db.VarChar(50)
+  tx_type      TxType
+  amount       Decimal  @db.Decimal(15, 2)
+  tx_time      DateTime @default(now()) @db.DateTime
+  location_lat Decimal? @db.Decimal(10, 8)
+  location_lng Decimal? @db.Decimal(11, 8)
+  source       TxSource @default(webhook)
+
+  bank  Bank  @relation(fields: [bank_id], references: [id])
+  agent Agent @relation(fields: [agent_id], references: [id])
+
+  @@index([bank_id, tx_time(desc)])
+  @@index([agent_id, tx_time(desc)])
+  @@index([terminal_id])
+  @@index([location_lat, location_lng])
+  @@map("transaction_logs")
+}
+
+model RefillEvent {
+  id         BigInt       @id @default(autoincrement())
+  agent_id   String       @db.Char(36)
+  bank_id    String       @db.Char(36)
+  amount     Decimal      @db.Decimal(15, 2)
+  source     RefillSource @default(atm)
+  source_ref String?      @db.VarChar(100)
+  refill_at  DateTime     @db.DateTime
+  created_at DateTime     @default(now()) @db.Timestamp(6)
+
+  agent Agent @relation(fields: [agent_id], references: [id])
+  bank  Bank  @relation(fields: [bank_id], references: [id])
+
+  @@index([agent_id, refill_at(desc)])
+  @@index([bank_id, refill_at(desc)])
+  @@map("refill_events")
+}
+
+model BankATM {
+  id              String               @id @db.VarChar(36)
+  bank_id         String               @db.VarChar(36)
+  atm_code        String               @db.VarChar(20)
+  name            String?              @db.VarChar(100)
+  location        Unsupported("POINT")
+  address         String?              @db.VarChar(255)
+  float_available Decimal              @default(0) @db.Decimal(15, 2)
+  float_reserved  Decimal              @default(0) @db.Decimal(15, 2)
+  last_sync_at    DateTime?            @db.DateTime
+  is_active       Boolean              @default(true)
+
+  bank             Bank             @relation("BankATMs", fields: [bank_id], references: [id])
+  otp_reservations OtpReservation[]
+  atm_feedback     AtmFeedback[]
+
+  @@index([bank_id, float_available])
+  @@index([bank_id, atm_code])
+  @@map("bank_atms")
+}
+
+model AgentFloatSnapshot {
+  agent_id        String      @id @db.VarChar(36)
+  bank_id         String      @db.VarChar(36)
+  e_float         Decimal     @db.Decimal(15, 2)
+  cash_in_hand    Decimal     @default(0) @db.Decimal(15, 2)
+  source          FloatSource
+  last_updated_at DateTime    @default(now()) @updatedAt @db.Timestamp(6)
+  staleness_score Int         @default(0) @db.TinyInt
+
+  agent Agent @relation("AgentFloat", fields: [agent_id], references: [id], onDelete: Cascade)
+
+  @@index([bank_id, e_float])
+  @@index([staleness_score, last_updated_at])
+  @@map("agent_float_snapshots")
+}
+
+model OtpReservation {
+  id              BigInt    @id @default(autoincrement())
+  agent_id        String    @db.VarChar(36)
+  bank_id         String    @db.VarChar(36)
+  atm_id          String    @db.VarChar(36)
+  otp_code        String    @db.VarChar(6)
+  amount_needed   Decimal   @db.Decimal(15, 2)
+  amount_reserved Decimal   @db.Decimal(15, 2)
+  status          OtpStatus @default(issued)
+  issued_at       DateTime  @default(now()) @db.Timestamp(6)
+  expires_at      DateTime  @db.DateTime // Use migration to set GENERATED ALWAYS
+  used_at         DateTime? @db.DateTime
+
+  agent    Agent        @relation(fields: [agent_id], references: [id])
+  atm      BankATM      @relation(fields: [atm_id], references: [id])
+  feedback AtmFeedback?
+
+  @@index([otp_code])
+  @@index([agent_id, status])
+  @@index([expires_at])
+  @@index([atm_id])
+  @@map("otp_reservations")
+}
+
+model SmartPullQueue {
+  id             BigInt     @id @default(autoincrement())
+  bank_id        String     @db.VarChar(36)
+  agent_id       String     @unique // Enforces 1:1 via UNIQUE(bank_id, agent_id)
+  priority       Int        @default(1) @db.TinyInt
+  last_pulled_at DateTime?  @db.DateTime
+  pull_after     DateTime   @default(now()) @db.Timestamp(6)
+  status         PullStatus @default(pending)
+
+  bank  Bank  @relation(fields: [bank_id], references: [id])
+  agent Agent @relation("SmartPullAgent", fields: [agent_id], references: [id])
+
+  @@unique([bank_id, agent_id])
+  @@index([bank_id, priority, pull_after])
+  @@index([agent_id])
+  @@map("smart_pull_queue")
+}
+
+model WebhookDelivery {
+  id              BigInt         @id @default(autoincrement())
+  bank_id         String         @db.VarChar(36)
+  event_id        String         @db.VarChar(100)
+  payload_hash    String         @db.VarChar(64)
+  status          DeliveryStatus @default(received)
+  attempt_count   Int            @default(1) @db.TinyInt
+  last_attempt_at DateTime?      @db.DateTime
+  next_retry_at   DateTime?      @db.DateTime
+  error_message   String?        @db.Text
+
+  bank Bank @relation(fields: [bank_id], references: [id])
+
+  @@unique([bank_id, event_id])
+  @@index([bank_id, event_id])
+  @@index([status, next_retry_at])
+  @@map("webhook_deliveries")
+}
+
+model AuditLog {
+  id         BigInt    @id @default(autoincrement())
+  bank_id    String    @db.VarChar(36)
+  agent_id   String?   @db.VarChar(36)
+  event_type String    @db.VarChar(50)
+  event_data Json
+  actor_type ActorType
+  actor_id   String?   @db.VarChar(100)
+  ip_address Bytes?    @db.VarBinary(16)
+  created_at DateTime  @default(now()) @db.Timestamp(6)
+
+  bank  Bank   @relation(fields: [bank_id], references: [id])
+  agent Agent? @relation("AuditLogAgent", fields: [agent_id], references: [id])
+
+  @@index([bank_id, event_type, created_at])
+  @@index([agent_id])
+  @@map("audit_log")
+}
+
+model AtmFeedback {
+  id               BigInt        @id @default(autoincrement())
+  otp_id           BigInt        @unique
+  agent_id         String        @db.VarChar(36)
+  atm_id           String        @db.VarChar(36)
+  event            FeedbackEvent
+  amount_dispensed Decimal?      @db.Decimal(15, 2)
+  event_at         DateTime      @default(now()) @db.Timestamp(6)
+  raw_payload      Json?
+
+  otp   OtpReservation @relation(fields: [otp_id], references: [id])
+  agent Agent          @relation(fields: [agent_id], references: [id])
+  atm   BankATM        @relation(fields: [atm_id], references: [id])
+
+  @@index([otp_id])
+  @@index([agent_id])
+  @@map("atm_feedback")
+}
+
+model BankDomain {
+  id         BigInt   @id @default(autoincrement())
+  bank_id    String   @db.VarChar(36)
+  url        String   @unique @db.VarChar(255)
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now()) @db.Timestamp(0)
+  updated_at DateTime @updatedAt @db.Timestamp(0)
+
+  bank Bank @relation(fields: [bank_id], references: [id], onDelete: Cascade)
+
+  @@index([bank_id])
+  @@index([url])
+  @@map("bank_domains")
+}
+
+// === Enums ===
+
+enum BankStatus {
+  active
+  suspended
+  onboarding
+}
+
+enum AgentStatus {
+  active
+  suspended
+  fraud
+  inactive
+}
+
+enum OnboardedVia {
+  api
+  manual
+}
+
+enum UserStatus {
+  active
+  suspended
+  pending
+}
+
+enum TxType {
+  withdrawal
+  deposit
+}
+
+enum TxSource {
+  webhook
+  api_pull
+}
+
+enum RefillSource {
+  atm
+}
+
+enum OtpStatus {
+  issued
+  used
+  expired
+}
+
+enum FeedbackEvent {
+  withdrawal_success
+  withdrawal_failed
+  code_invalid
+}
+
+enum FloatSource {
+  webhook
+  pull
+  fallback
+}
+
+enum PullStatus {
+  pending
+  in_progress
+  completed
+  failed
+}
+
+enum DeliveryStatus {
+  received
+  processed
+  failed
+  retry
+}
+
+enum ActorType {
+  system
+  bank_admin
+  agent
 }

@@ -7,7 +7,7 @@ const debugSwaggerFiles = async () => {
     console.log('\n🔍 Debugging Swagger file scanning...\n');
     
     const patterns = [
-        './src/modules/v1/**/*.{ts,js}',
+        './src/modules/**/*.{ts,js}',
         './dist/modules/**/**/*.js',
         './modules/**/**/*.js'      
     ];
@@ -26,8 +26,7 @@ const debugSwaggerFiles = async () => {
 
     // Check specific files
     const specificFiles = [
-        './src/modules/v1/auth/routes/authRoute.ts',
-        './src/modules/v1/auth/controller/authController.ts'
+        './src/modules/auth/routes/authRoute.ts'
     ];
 
     console.log('🎯 Checking specific files:');

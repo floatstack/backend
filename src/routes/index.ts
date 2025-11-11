@@ -5,6 +5,6 @@ import authRoute from '../modules/auth/routes/authRoute.js';
 
 const router = Router();
 
-router.use('/auth', authRoute);
+router.use('/api/auth', authRoute);
 
 export default router;
