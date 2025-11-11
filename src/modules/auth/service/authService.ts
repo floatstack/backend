@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt';
 
 
 interface LoginResponse {
+    route: string | null;
     authorization: {
         access_token: string;
         refresh_token: string;
@@ -20,15 +21,17 @@ export class AuthService {
             },
         });
 
+        const hashedPassword = await bcrypt.hash('password', 10);
+        console.log('Hashed password for "password":' + "\n", hashedPassword);
         if (!user || user.status !== 'active') {
             throw { statusCode: 401, message: 'Invalid credentials or user has been suspended', errors: [] };
         }
-
-        if (!user.password_hash || !await bcrypt.compare(password, Buffer.from(user.password_hash).toString())) {
+        if (!user.password_hash || !await bcrypt.compare(password, user.password_hash)) {
             throw { statusCode: 401, message: 'Invalid credentials', errors: [] };
         }
 
-        let bankDomain=null;
+        let bankDomain, route = null;
+
         // Get Route
         if (user.bank_id) {
             // bankDomain = await prisma.bankDomain.findFirst({
@@ -62,7 +65,7 @@ export class AuthService {
             data: { last_login_at: new Date() },
         });
 
-        return { authorization: { access_token, refresh_token } };
+        return { route, authorization: { access_token, refresh_token } };
 
     }
 

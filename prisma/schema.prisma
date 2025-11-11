@@ -24,7 +24,7 @@ model Bank {
   atm_api_url           String?    @db.VarChar(255)
   atm_api_key_encrypted Bytes?     @db.VarBinary(512)
   created_at            DateTime   @default(now()) @db.Timestamp(6)
-  updated_at            DateTime   @updatedAt @db.Timestamp(6)
+  updated_at            DateTime   @updatedAt @default(now()) @db.Timestamp(6)
 
   config             BankConfig?
   agents             Agent[]
@@ -66,7 +66,7 @@ model Agent {
   status         AgentStatus          @default(active)
   last_active_at DateTime?            @db.DateTime
   created_at     DateTime             @default(now()) @db.Timestamp(6)
-  updated_at     DateTime             @updatedAt @db.Timestamp(6)
+  updated_at     DateTime             @updatedAt @default(now()) @db.Timestamp(6)
 
   bank             Bank                @relation(fields: [bank_id], references: [id])
   transaction_logs TransactionLog[]
@@ -101,7 +101,7 @@ model User {
   agent_id      String?    @db.VarChar(36)
   role_id       Int
   email         String     @unique @db.VarChar(255)
-  password_hash Bytes?     @db.VarBinary(60)
+  password_hash String?    @db.VarChar(255)
   status        UserStatus @default(pending)
   last_login_at DateTime?  @db.DateTime
   created_at    DateTime   @default(now()) @db.Timestamp(6)
@@ -298,7 +298,7 @@ model BankDomain {
   url        String   @unique @db.VarChar(255)
   is_active  Boolean  @default(true)
   created_at DateTime @default(now()) @db.Timestamp(0)
-  updated_at DateTime @updatedAt @db.Timestamp(0)
+  updated_at DateTime @updatedAt @default(now()) @db.Timestamp(0)
 
   bank Bank @relation(fields: [bank_id], references: [id], onDelete: Cascade)
 

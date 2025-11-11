@@ -19,7 +19,7 @@ const router = express.Router();
  *             type: object
  *             required: [email, password, authProvider]
  *             properties:
- *               email: { type: string, format: email, example: "user@test.com" }
+ *               email: { type: string, format: email, example: "bank@test.com" }
  *               password: { type: string, example: "password" }
  *     responses:
  *       200:
