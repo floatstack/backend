@@ -62,6 +62,8 @@ model Agent {
   work_location  Unsupported("POINT") // Handled via raw SQL
   work_address   String?              @db.VarChar(255)
   assigned_limit Decimal              @db.Decimal(15, 2)
+  threshold_low    Decimal?             @db.Decimal(5,4)  // e.g., 0.60 = 60%
+  threshold_high   Decimal?             @db.Decimal(5,4)
   onboarded_via  OnboardedVia
   status         AgentStatus          @default(active)
   last_active_at DateTime?            @db.DateTime
@@ -118,9 +120,12 @@ model User {
 
 model TransactionLog {
   id           BigInt   @id @default(autoincrement())
-  bank_id      String   @db.VarChar(36)
+  bank_id      String?   @db.VarChar(36)
   agent_id     String   @db.VarChar(36)
   terminal_id  String?  @db.VarChar(50)
+  reference    String  @db.VarChar(255)
+  status       String  @db.VarChar(50)
+  payment_method String  @db.VarChar(100)
   tx_type      TxType
   amount       Decimal  @db.Decimal(15, 2)
   tx_time      DateTime @default(now()) @db.DateTime
@@ -128,7 +133,7 @@ model TransactionLog {
   location_lng Decimal? @db.Decimal(11, 8)
   source       TxSource @default(webhook)
 
-  bank  Bank  @relation(fields: [bank_id], references: [id])
+  bank  Bank?  @relation(fields: [bank_id], references: [id])
   agent Agent @relation(fields: [agent_id], references: [id])
 
   @@index([bank_id, tx_time(desc)])
@@ -237,7 +242,7 @@ model SmartPullQueue {
 
 model WebhookDelivery {
   id              BigInt         @id @default(autoincrement())
-  bank_id         String         @db.VarChar(36)
+  bank_id        String?         @db.VarChar(36)
   event_id        String         @db.VarChar(100)
   payload_hash    String         @db.VarChar(64)
   status          DeliveryStatus @default(received)
@@ -246,7 +251,7 @@ model WebhookDelivery {
   next_retry_at   DateTime?      @db.DateTime
   error_message   String?        @db.Text
 
-  bank Bank @relation(fields: [bank_id], references: [id])
+  bank Bank? @relation(fields: [bank_id], references: [id])
 
   @@unique([bank_id, event_id])
   @@index([bank_id, event_id])

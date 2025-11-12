@@ -10,6 +10,8 @@ import routes from './routes/index.js';
 import { errorResponse } from './utils/response.js';
 import { initScheduler } from './utils/initScheduler.js';
 
+// For development purposes, import all workers to run in the same process
+import './workers/index.js';
 
 const app: Express = express();
 
