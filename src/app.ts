@@ -9,6 +9,16 @@ import { debugSwaggerFiles } from './config/swagger-debug.js';
 import routes from './routes/index.js';
 import { errorResponse } from './utils/response.js';
 import { initScheduler } from './utils/initScheduler.js';
+import { PredictionService } from './modules/prediction/service/predictionService.js';
+
+// Initialize Prediction Service and load AI model
+const predictionService = PredictionService.getInstance();
+predictionService.initialize().then(() => {
+  console.log('Prediction Service initialized.');
+}).catch((err) => {
+  console.error('Failed to initialize Prediction Service:', err);
+});
+
 
 // For development purposes, import all workers to run in the same process
 import './workers/index.js';

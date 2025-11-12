@@ -3,6 +3,7 @@ import { logger } from '../../../utils/logger.js';
 import redisClient from '../../../config/redis.js';
 import axios from 'axios';
 import { decrypt } from '../../../utils/helper.js';
+import { PredictionService } from '../../prediction/service/predictionService.js';
 
 
 export class webhookService {
@@ -125,7 +126,15 @@ export class webhookService {
         // }
 
         //AI Prediction
-        // setImmediate(() => triggerAIPrediction(agent.id).catch(console.error));
+        setImmediate(async () => {
+            try {
+                const predictionService = PredictionService.getInstance();
+                await predictionService.triggerPrediction(agent.id);
+            } catch (error) {
+                console.error(error);
+            }
+        });
+
 
     }
 
@@ -159,4 +168,7 @@ export class webhookService {
 
         return null;
     }
+
+
+
 }
