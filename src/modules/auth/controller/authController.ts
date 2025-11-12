@@ -3,6 +3,8 @@ import { successResponse, errorResponse } from '../../../utils/response.js';
 import { AuthService } from '../service/authService.js';
 import { UserRequest } from '../../../middleware/validationMiddleware.js';
 
+import crypto from 'crypto';
+
 
 export const login = async (req: UserRequest, res: Response, next: NextFunction) => {
   try {

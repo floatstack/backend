@@ -6,6 +6,11 @@ import { errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
 import { sendEmail } from './sendEmail.js';
 import pLimit from 'p-limit';
+import crypto from 'crypto';
+import { log } from 'console';
+
+const IV_LENGTH = process.env.IV_LENGTH ? parseInt(process.env.IV_LENGTH) : 16;
+const TAG_LENGTH = process.env.TAG_LENGTH ? parseInt(process.env.TAG_LENGTH) : 16;
 
 
 
@@ -19,28 +24,14 @@ export const removeUndefined = (obj: Record<string, any>) => {
   );
 };
 
-// Simple phone verifier for E.164 format (since frontend sends with country code)
+// Simple phone verifier for E.164 format
 export function verifyPhone(phone: string | null | undefined): boolean {
   if (!phone) return true;
   const e164Regex = /^\+[1-9]\d{1,14}$/;
   return e164Regex.test(phone);
 }
 
-export function omit<Data extends object, Keys extends keyof Data>(
-  data: Data | undefined | null,
-  keys: Keys[],
-): Omit<Data, Keys> | undefined {
-  if (!data) {
-    return;
-  }
-  const result = { ...data };
 
-  for (const key of keys) {
-    delete result[key];
-  }
-
-  return result as Omit<Data, Keys>;
-}
 
 export function serializeData(value: any): any {
   if (typeof value === 'bigint') return value.toString();
@@ -74,7 +65,7 @@ export function serializeData(value: any): any {
 
 
 
-export function generateRandomString(length: number,charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'): string {
+export function generateRandomString(length: number, charset = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'): string {
   if (!Number.isInteger(length) || length <= 0) {
     throw new TypeError('length must be a positive integer');
   }
@@ -110,37 +101,56 @@ export function handlePrismaError(error: any) {
 }
 
 
-const csvStringArray: ExtensionFactory = (joi) => ({
-  type: "csvStringArray",
-  base: joi.array().items(joi.string().pattern(/^\d+$/)),
-  coerce: {
-    from: "string",
-    method(value: string) {
-      if (!value.trim()) return { value: [] };
-      return { value: value.split(",").map((s: string) => s.trim()) };
-    },
-  },
-});
 
-const csvNumberArray: ExtensionFactory = (joi) => ({
-  type: "csvNumberArray",
-  base: joi.array().items(joi.number().integer().positive()),
-  coerce: {
-    from: "string",
-    method(value: string, helpers) {
-      if (!value.trim()) return { value: [] };
-      const parts = value.split(",").map((s: string) => Number(s.trim()));
-      const invalid = parts.find((n) => !Number.isInteger(n) || n <= 0);
-      if (invalid !== undefined) {
-        return {
-          errors: [helpers.error("any.invalid", { message: "All IDs must be positive integers" })],
-        };
-      }
-      return { value: parts };
-    },
-  },
-});
+export function encrypt(text: string): string {
+  const encryption_key = process.env.ENCRYPTION_KEY;
+  if (!encryption_key) {
+    logger.error('ENCRYPTION_KEY is not set in environment variables.');
+    throw new Error('Internal server error.');
+  }
 
-export const JoiCsv = JoiBase.extend(csvStringArray, csvNumberArray);
+  const ENCRYPTION_KEY = crypto.createHash('sha256').update(encryption_key).digest();
+  const iv = crypto.randomBytes(IV_LENGTH);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+
+  const encrypted = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return Buffer.concat([iv, tag, encrypted]).toString('base64');
+}
+
+export function decrypt(encryptedText: string): string {
+  const data = Buffer.from(encryptedText, 'base64');
+  const iv = data.subarray(0, IV_LENGTH);
+  const tag = data.subarray(IV_LENGTH, IV_LENGTH + TAG_LENGTH);
+  const text = data.subarray(IV_LENGTH + TAG_LENGTH);
+
+  const encryption_key = process.env.ENCRYPTION_KEY;
+  if (!encryption_key) {
+    logger.error('ENCRYPTION_KEY is not set in environment variables.');
+    throw new Error('Internal server error.');
+  }
+
+  const ENCRYPTION_KEY = crypto.createHash('sha256').update(encryption_key).digest();
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(tag);
+
+  try {
+    const decrypted = Buffer.concat([decipher.update(text), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch {
+    logger.error('Failed to decrypt data. It may have been tampered with.');
+    throw new Error('Internal server error.');
+  }
+}
+
+export function generateLookupKey(value: string): string {
+  const secret = process.env.LOOKUP_KEY;
+  if (!secret) {
+    logger.error('LOOKUP_KEY is not set in environment variables.');
+    throw new Error('Internal server error.');
+  }
 
 
+  return crypto.createHmac('sha256', secret).update(value).digest('hex');
+}
