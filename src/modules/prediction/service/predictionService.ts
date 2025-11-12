@@ -1,8 +1,13 @@
 import * as tf from '@tensorflow/tfjs-node';
 import { prisma } from '../../../config/database.js';
 import { logger } from '../../../utils/logger.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 // import { sendLowFloatAlert, sendCashRichAlert } from '../notification/service/alertService.js';
 // import { syncAgentATMCache } from '../../agent/service/atmService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export enum LiquidityClass {
     LOW_E_FLOAT = 0,
@@ -24,9 +29,13 @@ interface Features {
 export class PredictionService {
     private static instance: PredictionService;
     private model: tf.LayersModel | null = null;
-    private readonly modelPath = 'file://./models/liquidity-v1/model.json';
+    private readonly modelPath: string;
 
-    private constructor() { }
+    private constructor() {
+        // Construct absolute path to model
+        this.modelPath = `file://${join(__dirname, 'models', 'liquidity-v1', 'model.json')}`;
+        logger.info(`Model path set to: ${this.modelPath}`);
+    }
 
     public static getInstance(): PredictionService {
         if (!PredictionService.instance) {
@@ -38,11 +47,16 @@ export class PredictionService {
 
     public async initialize(): Promise<void> {
         try {
+            logger.info(`Attempting to load AI model from: ${this.modelPath}`);
             this.model = await tf.loadLayersModel(this.modelPath);
-            logger.info('AI Prediction model loaded successfully');
+            logger.info(' AI Prediction model loaded successfully');
         } catch (error: any) {
-            logger.error(`Failed to load AI model from ${this.modelPath}`, { error: error.message });
+            logger.error(` Failed to load AI model from ${this.modelPath}`, { 
+                error: error.message,
+                stack: error.stack 
+            });
             this.model = null;
+            throw error; // Re-throw so app.ts can handle it
         }
     }
 
@@ -118,6 +132,7 @@ export class PredictionService {
     public async predict(agentId: string): Promise<{
         predictedClass: LiquidityClass;
         probabilities: { low: number; balanced: number; rich: number };
+        confidence: number;
     } | null> {
         if (!this.model) {
             logger.warn('AI model not loaded. Skipping prediction.');
@@ -144,6 +159,7 @@ export class PredictionService {
         const [p_low, p_balanced, p_rich] = probabilityArray[0] as [number, number, number];
 
         const predictedClass = probabilityArray[0].indexOf(Math.max(...probabilityArray[0])) as LiquidityClass;
+        const confidence = Math.max(p_low, p_balanced, p_rich);
 
         
         tensor.dispose();
@@ -151,7 +167,8 @@ export class PredictionService {
 
         return {
             predictedClass,
-            probabilities: { low: p_low, balanced: p_balanced, rich: p_rich }
+            probabilities: { low: p_low, balanced: p_balanced, rich: p_rich },
+            confidence
         };
     }
 
@@ -160,7 +177,7 @@ export class PredictionService {
         const result = await this.predict(agentId);
         if (!result) return;
 
-        const { predictedClass, probabilities } = result;
+        const { predictedClass, probabilities, confidence } = result;
         const agent = await prisma.agent.findUnique({ where: { id: agentId } });
         if (!agent) return;
 
@@ -170,6 +187,10 @@ export class PredictionService {
             //     `AI Alert: High risk of low float in 6h (${(probabilities.low * 100).toFixed(0)}% confidence)`
             // );
             // await syncAgentATMCache(agentId);
+            logger.warn(` LOW E-FLOAT Alert for ${agent.agent_id}`, {
+                confidence: `${(probabilities.low * 100).toFixed(1)}%`,
+                probabilities
+            });
         }
 
         if (predictedClass === LiquidityClass.CASH_RICH && probabilities.rich > 0.7) {
@@ -177,9 +198,28 @@ export class PredictionService {
             //     agent,
             //     `AI: Excess float detected (${(probabilities.rich * 100).toFixed(0)}% confidence)`
             // );
+            logger.info(`CASH RICH Alert for ${agent.agent_id}`, {
+                confidence: `${(probabilities.rich * 100).toFixed(1)}%`,
+                probabilities
+            });
         }
 
 
-        logger.info(`AI Prediction for ${agent.agent_id}: ${LiquidityClass[predictedClass]} (${(Math.max(...Object.values(probabilities)) * 100).toFixed(0)}%)`);
+        logger.info(`AI Prediction for ${agent.agent_id}`, {
+            prediction: LiquidityClass[predictedClass],
+            confidence: `${(confidence * 100).toFixed(1)}%`,
+            probabilities: {
+                low: `${(probabilities.low * 100).toFixed(1)}%`,
+                balanced: `${(probabilities.balanced * 100).toFixed(1)}%`,
+                rich: `${(probabilities.rich * 100).toFixed(1)}%`
+            }
+        });
+    }
+    
+    /**
+     * Check if model is loaded
+     */
+    public isModelLoaded(): boolean {
+        return this.model !== null;
     }
 }

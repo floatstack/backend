@@ -9,91 +9,122 @@ import { PredictionService } from '../../prediction/service/predictionService.js
 export class webhookService {
 
     static async handlePayment(payload: any): Promise<void> {
-        // Simulate processing the payment webhook payload
+        // For testing only
         payload = {
-            "id": "evt_1M83ujd9defalitw",
+            "id": "evt_gtb_20251112_093045_000212",
             "event_type": "transaction.completed",
-            "timestamp": "2023-11-12T10:30:00Z",
+            "timestamp": "2025-11-12T09:30:45.123Z",
             "transaction": {
-                "id": "txn_1M9zY2AbcdefGhij",
-                "amount": 5500,
+                "id": "txn_gtb_20251112_093045_001",
+                "amount": 75000,
                 "currency": "NGN",
                 "status": "succeeded",
                 "type": "withdrawal",
                 "payment_method": {
                     "type": "card",
-                    "brand": "visa",
-                    "last4": "4242"
+                    "brand": "mastercard",
+                    "last4": "9012"
                 },
                 "customer": {
-                    "id": "cust_abc123",
-                    "name": "Jane Doe",
-                    "email": "jane.doe@example.com"
+                    "id": "cust_gtb_789101",
+                    "name": "Emeka Nwosu",
+                    "email": "emeka.nwosu@gmail.com"
                 },
                 "metadata": {
-                    "terminal_id": "POS_123",
-                    "agent_id": "emp_007"
-                }
+                    "terminal_id": "GTB2039A001",
+                    "agent_id": "GTB-AG-0001"
+                },
+                "balance_after": 245000
             }
         };
 
         const transaction = payload.transaction;
-
-        const cacheKey = `webhook:${transaction.id}`;
-        const cacheExists = await redisClient.get(cacheKey);
-        if (cacheExists) {
-            logger.warn(`Duplicate webhook ignored: ${transaction.id}`);
+        if (!transaction) {
+            logger.warn('Missing transaction in payload');
             return;
         }
 
-        await redisClient.set(cacheKey, "processed", { EX: 60 * 10 });
+        // === Dedupe ===
+        const cacheKey = `webhook:${transaction.id}`;
+        const isDuplicate = await redisClient.get(cacheKey);
+        if (isDuplicate) {
+            logger.info(`Duplicate webhook ignored: ${transaction.id}`);
+            return;
+        }
+        await redisClient.set(cacheKey, 'processed', { EX: 600 });
 
-        const agentId = transaction.metadata.agent_id;
-        const terminalId = transaction.metadata.terminal_id;
+        // === Extract ===
+        const agentId = transaction.metadata?.agent_id;
+        const terminalId = transaction.metadata?.terminal_id;
         const txType = transaction.type;
-        const amount = transaction.amount;
-        const eventTime = new Date(transaction.timestamp);
+        const amount = Number(transaction.amount);
+        const rawTimestamp = payload.timestamp || transaction.timestamp || new Date().toISOString();
+
+        if (!agentId || !txType) {
+            logger.error('Missing required fields', {
+                agentId,
+                terminalId,
+                txType,
+                rawTimestamp,
+                payload: JSON.stringify(payload)
+            });
+            return;
+        }
+
+        const eventTime = new Date(rawTimestamp);
+        if (isNaN(eventTime.getTime())) {
+            logger.error('Invalid timestamp format', { rawTimestamp });
+            return;
+        }
 
         const agent = await prisma.agent.findUnique({
             where: { agent_id: agentId },
-            include: { bank: { include: { config: true } } }
-
+            include: {
+                bank: { include: { config: true } },
+                float_snapshots: true
+            }
         });
+
         if (!agent) {
             logger.error(`Agent not found: ${agentId}`);
             return;
         }
 
-        const bankId = agent.bank_id;
-
-
         let eFloat = transaction.balance_after ?? transaction.balance;
 
         if (!eFloat) {
-            // Fallback: Call Bank API
             eFloat = await this.getFloatFromBankAPI(agent.bank_id, agentId);
         }
 
-        if (eFloat === null) {
-            logger.error(`Failed to get e_float for agent ${agentId}`);
-            return;
+        if (eFloat === null || eFloat === undefined) {
+            // Fallback: calculate from last known balance + transaction
+            const lastSnapshot = agent.float_snapshots;
+            if (lastSnapshot) {
+                const currentFloat = lastSnapshot.e_float.toNumber();
+                eFloat = txType === 'withdrawal'
+                    ? currentFloat - amount
+                    : currentFloat + amount;
+                logger.info(`Calculated e_float from last snapshot: ${eFloat}`);
+            } else {
+                logger.error(`Failed to determine e_float for ${agentId}`);
+                return;
+            }
         }
 
-        eFloat = Math.max(0, eFloat ?? 1000);
+        eFloat = Math.max(0, eFloat);
 
-        // Update Snapshot 
         await prisma.agentFloatSnapshot.upsert({
             where: { agent_id: agent.id },
             update: {
                 e_float: eFloat,
-                source: eFloat === transaction.balance_after ? 'webhook' : 'api_pull',
+                source: transaction.balance_after ? 'webhook' : 'calculated',
                 last_updated_at: new Date()
             },
             create: {
                 agent_id: agent.id,
                 bank_id: agent.bank_id,
                 e_float: eFloat,
-                source: transaction.balance_after ? 'webhook' : 'api_pull',
+                source: 'webhook',
                 cash_in_hand: 0
             }
         });
@@ -104,45 +135,50 @@ export class webhookService {
                 agent_id: agent.id,
                 terminal_id: terminalId,
                 tx_type: txType,
-                status: transaction.status,
-                payment_method: transaction.payment_method.type,
+                status: transaction.status || 'succeeded',
+                payment_method: transaction.payment_method?.type || 'unknown',
                 reference: transaction.id,
                 amount,
                 tx_time: eventTime
             }
         });
 
-        const lowThreshold = agent.threshold_low
-            ? agent.threshold_low.toNumber() * agent.assigned_limit.toNumber()
-            : (agent.bank.config?.threshold_low.toNumber() ?? 0.65) * agent.assigned_limit.toNumber();
+        logger.info(` Processed ${txType} ₦${amount.toLocaleString()} for ${agentId}`, {
+            newBalance: `₦${eFloat.toLocaleString()}`,
+            transactionId: transaction.id
+        });
 
-        const highThreshold = agent.threshold_high
-            ? agent.threshold_high.toNumber() * agent.assigned_limit.toNumber()
-            : (agent.bank.config?.threshold_high.toNumber() ?? 1.35) * agent.assigned_limit.toNumber();
-
-        // if (eFloat < lowThreshold) {
-        //     await sendLowFloatAlert(agent, eFloat, lowThreshold);
-        //     await syncAgentATMCache(agent.id);
-        // }
-
-        //AI Prediction
+        // === AI Prediction ===
         setImmediate(async () => {
             try {
                 const predictionService = PredictionService.getInstance();
+
+                // Check if model is loaded
+                if (!predictionService.isModelLoaded()) {
+                    logger.warn('AI model not loaded, skipping prediction');
+                    return;
+                }
+
+                logger.info(`Triggering AI prediction for ${agentId}...`);
                 await predictionService.triggerPrediction(agent.id);
-            } catch (error) {
-                console.error(error);
+            } catch (err: any) {
+                logger.error('AI prediction failed', {
+                    agentId,
+                    error: err.message,
+                    stack: err.stack
+                });
             }
         });
-
-
     }
 
 
     private static async getFloatFromBankAPI(bankId: string, agentId: string): Promise<number | null> {
         const cacheKey = `float:api:${agentId}`;
         const cached = await redisClient.get(cacheKey);
-        if (cached) return parseFloat(cached);
+        if (cached) {
+            logger.info(`Cache hit for float: ${agentId}`);
+            return parseFloat(cached);
+        }
 
         try {
             const bank = await prisma.bank.findUnique({
@@ -150,7 +186,10 @@ export class webhookService {
                 select: { api_base_url: true, api_key: true, api_secret: true }
             });
 
-            if (!bank?.api_base_url) return null;
+            if (!bank?.api_base_url) {
+                logger.warn(`No API URL configured for bank ${bankId}`);
+                return null;
+            }
 
             const response = await axios.get(`${bank.api_base_url}/${agentId}`, {
                 headers: { 'Authorization': `Bearer ${decrypt(bank.api_key ?? '')}` },
@@ -159,16 +198,17 @@ export class webhookService {
 
             const balance = response.data.balance ?? response.data.e_float;
             if (balance !== undefined) {
-                await redisClient.set(cacheKey, balance.toString(), { EX: 60 }); // cache for 1 minute
+                await redisClient.set(cacheKey, balance.toString(), { EX: 60 });
+                logger.info(`Fetched e_float from bank API: ₦${balance.toLocaleString()}`);
                 return balance;
             }
         } catch (err: any) {
-            logger.error(`API float fetch failed for ${agentId}: ${err.message}`);
+            logger.error(`API float fetch failed for ${agentId}`, {
+                error: err.message,
+                bankId
+            });
         }
 
         return null;
     }
-
-
-
 }
