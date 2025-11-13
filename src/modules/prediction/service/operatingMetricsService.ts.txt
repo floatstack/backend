@@ -1,0 +1,213 @@
+import { prisma } from '../../../config/database.js';
+import { logger } from '../../../utils/logger.js';
+import { Decimal } from '@prisma/client/runtime/library';
+
+interface OperatingMetrics {
+    avg_daily_withdrawals: number;
+    operating_float_target: number;
+    peak_daily_withdrawal: number;
+}
+
+export class OperatingMetricsService {
+    private static instance: OperatingMetricsService;
+
+    private constructor() { }
+
+    public static getInstance(): OperatingMetricsService {
+        if (!OperatingMetricsService.instance) {
+            OperatingMetricsService.instance = new OperatingMetricsService();
+        }
+        return OperatingMetricsService.instance;
+    }
+
+    /**
+     * Calculate operating metrics for a single agent
+     */
+    public async calculateForAgent(agentId: string): Promise<OperatingMetrics | null> {
+        try {
+            const lookbackDays = 30;
+            const startDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+
+            // Get all withdrawal transactions in the last 30 days
+            const withdrawals = await prisma.transactionLog.findMany({
+                where: {
+                    agent_id: agentId,
+                    tx_type: 'withdrawal',
+                    status: 'success', // Only count successful transactions
+                    tx_time: { gte: startDate }
+                },
+                select: {
+                    amount: true,
+                    tx_time: true
+                },
+                orderBy: { tx_time: 'asc' }
+            });
+
+            if (withdrawals.length === 0) {
+                logger.warn(`No withdrawal history for agent ${agentId}`);
+                return null;
+            }
+
+            // Calculate total withdrawal volume
+            const totalWithdrawals = withdrawals.reduce(
+                (sum, tx) => sum + tx.amount.toNumber(),
+                0
+            );
+
+            // Calculate average daily withdrawals
+            const avg_daily_withdrawals = totalWithdrawals / lookbackDays;
+
+            // Group withdrawals by day to find peak day
+            const dailyVolumes = this.groupByDay(withdrawals);
+            const peak_daily_withdrawal = Math.max(...dailyVolumes);
+
+            // Operating float target = 2 days of average withdrawals
+            // OR 1.5x peak day (whichever is higher for safety)
+            const operating_float_target = Math.max(
+                avg_daily_withdrawals * 2,
+                peak_daily_withdrawal * 1.5
+            );
+
+            logger.info(`Calculated metrics for agent ${agentId}`, {
+                avg_daily_withdrawals: avg_daily_withdrawals.toFixed(2),
+                peak_daily_withdrawal: peak_daily_withdrawal.toFixed(2),
+                operating_float_target: operating_float_target.toFixed(2),
+                sample_size: withdrawals.length
+            });
+
+            return {
+                avg_daily_withdrawals,
+                operating_float_target,
+                peak_daily_withdrawal
+            };
+        } catch (error: any) {
+            logger.error(`Failed to calculate metrics for agent ${agentId}`, {
+                error: error.message
+            });
+            return null;
+        }
+    }
+
+    /**
+     * Update operating metrics for a single agent in database
+     */
+    public async updateAgentMetrics(agentId: string): Promise<boolean> {
+        try {
+            const metrics = await this.calculateForAgent(agentId);
+
+            if (!metrics) {
+                return false;
+            }
+
+            await prisma.agent.update({
+                where: { id: agentId },
+                data: {
+                    avg_daily_withdrawals: new Decimal(metrics.avg_daily_withdrawals),
+                    operating_float_target: new Decimal(metrics.operating_float_target),
+                    peak_daily_withdrawal: new Decimal(metrics.peak_daily_withdrawal),
+                    last_metrics_update: new Date()
+                }
+            });
+
+            return true;
+        } catch (error: any) {
+            logger.error(`Failed to update metrics for agent ${agentId}`, {
+                error: error.message
+            });
+            return false;
+        }
+    }
+
+    /**
+     * Batch update metrics for all active agents
+     */
+    public async updateAllAgentsMetrics(bankId?: string): Promise<void> {
+        try {
+            logger.info(' Starting batch operating metrics calculation...');
+
+            const agents = await prisma.agent.findMany({
+                where: {
+                    status: 'active',
+                    ...(bankId && { bank_id: bankId })
+                },
+                select: { id: true, agent_id: true }
+            });
+
+            logger.info(`Found ${agents.length} active agents to process`);
+
+            let successCount = 0;
+            let failCount = 0;
+
+            for (const agent of agents) {
+                const success = await this.updateAgentMetrics(agent.id);
+                if (success) {
+                    successCount++;
+                } else {
+                    failCount++;
+                }
+
+                // Prevent rate limiting - small delay between agents
+                await this.sleep(100);
+            }
+
+            logger.info('✅ Batch metrics calculation complete', {
+                total: agents.length,
+                success: successCount,
+                failed: failCount
+            });
+        } catch (error: any) {
+            logger.error('Batch metrics calculation failed', {
+                error: error.message
+            });
+        }
+    }
+
+    /**
+     * Check if agent metrics are stale (> 24 hours old)
+     */
+    public async areMetricsStale(agentId: string): Promise<boolean> {
+        const agent = await prisma.agent.findUnique({
+            where: { id: agentId },
+            select: { last_metrics_update: true }
+        });
+
+        if (!agent || !agent.last_metrics_update) {
+            return true; // No metrics = stale
+        }
+
+        const hoursSinceUpdate =
+            (Date.now() - agent.last_metrics_update.getTime()) / (1000 * 60 * 60);
+
+        return hoursSinceUpdate > 24;
+    }
+
+    /**
+     * Group transactions by day and sum amounts
+     */
+    private groupByDay(transactions: Array<{ amount: Decimal; tx_time: Date }>): number[] {
+        const dayMap = new Map<string, number>();
+
+        for (const tx of transactions) {
+            const dayKey = tx.tx_time.toISOString().split('T')[0]; // YYYY-MM-DD
+            const current = dayMap.get(dayKey) || 0;
+            dayMap.set(dayKey, current + tx.amount.toNumber());
+        }
+
+        return Array.from(dayMap.values());
+    }
+
+    /**
+     * Calculate percentile from array
+     */
+    private getPercentile(values: number[], percentile: number): number {
+        if (values.length === 0) return 0;
+
+        const sorted = [...values].sort((a, b) => a - b);
+        const index = Math.ceil(sorted.length * percentile) - 1;
+        return sorted[Math.max(0, index)];
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+}

@@ -67,6 +67,12 @@ model Agent {
   assigned_limit Decimal              @db.Decimal(15, 2)
   threshold_low    Decimal?             @db.Decimal(5,4)  // e.g., 0.60 = 60%
   threshold_high   Decimal?             @db.Decimal(5,4)
+
+  avg_daily_withdrawals  Decimal?  @db.Decimal(15, 2)
+  operating_float_target Decimal?  @db.Decimal(15, 2)
+  peak_daily_withdrawal  Decimal?  @db.Decimal(15, 2)
+  last_metrics_update    DateTime? @db.DateTime
+
   onboarded_via  OnboardedVia
   status         AgentStatus          @default(active)
   last_active_at DateTime?            @db.DateTime

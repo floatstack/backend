@@ -43,7 +43,7 @@
   },
   "include": [
     "src/**/*.ts"
-  ],
+, "src/modules/prediction/service/predictionService.ts.old", "src/modules/prediction/service/predictionService.ts.new"  ],
   "exclude": [
     "node_modules",
     "dist"

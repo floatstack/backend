@@ -1,0 +1,290 @@
+import * as tf from '@tensorflow/tfjs-node';
+import { prisma } from '../../../config/database.js';
+import { logger } from '../../../utils/logger.js';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { OperatingMetricsService } from './operatingMetricsService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+export enum LiquidityClass {
+    LOW_E_FLOAT = 0,  // < 1 day runway OR < 50% of operating target
+    BALANCED = 1,      // 1-3 days runway OR 50-150% of operating target
+    CASH_RICH = 2      // > 3 days runway OR > 150% of operating target
+}
+
+interface Features {
+    float_health_ratio: number;        // Current float / Operating target
+    days_of_runway: number;            // Days until float depleted
+    withdrawal_velocity_6h: number;    // Hourly withdrawal rate
+    deposit_velocity_6h: number;       // Hourly deposit rate
+    net_velocity: number;              // Net cash flow (can be negative)
+    avg_withdrawal_size: number;       // Average transaction size
+    time_since_last_refill_hrs: number;
+    hour_sin: number;
+    hour_cos: number;
+    is_peak_hour: number;
+}
+
+export class PredictionService {
+    private static instance: PredictionService;
+    private model: tf.LayersModel | null = null;
+    private readonly modelPath: string;
+    private metricsService: OperatingMetricsService;
+
+    private constructor() {
+        this.modelPath = `file://${join(__dirname, 'models', 'liquidity-v1', 'model.json')}`;
+        this.metricsService = OperatingMetricsService.getInstance();
+        logger.info(`Model path set to: ${this.modelPath}`);
+    }
+
+    public static getInstance(): PredictionService {
+        if (!PredictionService.instance) {
+            PredictionService.instance = new PredictionService();
+        }
+        return PredictionService.instance;
+    }
+
+    public async initialize(): Promise<void> {
+        try {
+            logger.info(`Attempting to load AI model from: ${this.modelPath}`);
+            this.model = await tf.loadLayersModel(this.modelPath);
+            logger.info('✅ AI Prediction model loaded successfully');
+        } catch (error: any) {
+            logger.error(`❌ Failed to load AI model from ${this.modelPath}`, {
+                error: error.message,
+                stack: error.stack
+            });
+            this.model = null;
+            throw error;
+        }
+    }
+
+    /**
+     * Extract features for ML prediction
+     */
+    private async extractFeatures(agentId: string): Promise<number[] | null> {
+        try {
+            // Check if metrics are stale and update if needed
+            const metricsStale = await this.metricsService.areMetricsStale(agentId);
+            if (metricsStale) {
+                logger.info(`Refreshing stale metrics for agent ${agentId}`);
+                await this.metricsService.updateAgentMetrics(agentId);
+            }
+
+            const agent = await prisma.agent.findUnique({
+                where: { id: agentId },
+                include: {
+                    float_snapshots: true,
+                    transaction_logs: {
+                        where: {
+                            tx_time: { gte: new Date(Date.now() - 6 * 60 * 60 * 1000) },
+                            status: 'success' // Only successful transactions
+                        },
+                        orderBy: { tx_time: 'asc' }
+                    },
+                    refill_events: {
+                        take: 1,
+                        orderBy: { refill_at: 'desc' }
+                    }
+                }
+            });
+
+            if (!agent || !agent.float_snapshots) {
+                logger.warn(`No float data for agent ${agentId}`);
+                return null;
+            }
+
+            // If no operating metrics calculated yet, return null
+            if (!agent.operating_float_target) {
+                logger.warn(`No operating metrics for agent ${agentId}. Run metrics calculation first.`);
+                return null;
+            }
+
+            const snapshot = agent.float_snapshots;
+            const transactions = agent.transaction_logs;
+            const lastRefill = agent.refill_events?.[0];
+
+            const current_float = snapshot.e_float.toNumber();
+            const operating_target = agent.operating_float_target.toNumber();
+
+            // 1. Float health ratio (how much float vs operational need)
+            const float_health_ratio = operating_target > 0
+                ? current_float / operating_target
+                : 999; // No transaction history = undefined state
+
+            // 2. Calculate velocities (amount per hour over last 6 hours)
+            const withdrawals = transactions.filter(t => t.tx_type === 'withdrawal');
+            const deposits = transactions.filter(t => t.tx_type === 'deposit');
+
+            const withdrawal_velocity_6h = withdrawals.reduce(
+                (sum, t) => sum + t.amount.toNumber(), 0
+            ) / 6;
+
+            const deposit_velocity_6h = deposits.reduce(
+                (sum, t) => sum + t.amount.toNumber(), 0
+            ) / 6;
+
+            // 3. Days of runway (critical metric!)
+            const hourly_burn_rate = withdrawal_velocity_6h - deposit_velocity_6h;
+            const days_of_runway = hourly_burn_rate > 0
+                ? (current_float / (hourly_burn_rate * 24))
+                : 999; // No net burn = infinite runway
+
+            // 4. Net velocity (positive = gaining cash, negative = losing)
+            const net_velocity = deposit_velocity_6h - withdrawal_velocity_6h;
+
+            // 5. Average withdrawal size
+            const avg_withdrawal_size = withdrawals.length > 0
+                ? withdrawals.reduce((sum, t) => sum + t.amount.toNumber(), 0) / withdrawals.length
+                : 0;
+
+            // 6. Time since last refill
+            const time_since_last_refill_hrs = lastRefill
+                ? (Date.now() - new Date(lastRefill.refill_at).getTime()) / (1000 * 60 * 60)
+                : 999;
+
+            // 7. Time-based features (peak hours)
+            const now = new Date();
+            const hour = now.getHours();
+            const hour_sin = Math.sin(2 * Math.PI * hour / 24);
+            const hour_cos = Math.cos(2 * Math.PI * hour / 24);
+            const is_peak_hour = (hour >= 7 && hour <= 9) || (hour >= 16 && hour <= 18) ? 1 : 0;
+
+            // Normalize and cap features
+            return [
+                Math.min(float_health_ratio, 5),           // 0=empty, 1=target, >2=excess
+                Math.min(Math.max(days_of_runway, 0), 10), // 0-10 days (capped)
+                withdrawal_velocity_6h / 100000,           // Normalize to 0-1 range
+                deposit_velocity_6h / 100000,
+                net_velocity / 100000,                     // Can be negative
+                avg_withdrawal_size / 100000,
+                Math.min(time_since_last_refill_hrs / 100, 10),
+                hour_sin,
+                hour_cos,
+                is_peak_hour
+            ];
+        } catch (error: any) {
+            logger.error(`Feature extraction failed for agent ${agentId}`, {
+                error: error.message
+            });
+            return null;
+        }
+    }
+
+    /**
+     * Predict liquidity class for an agent
+     */
+    public async predict(agentId: string): Promise<{
+        predictedClass: LiquidityClass;
+        probabilities: { low: number; balanced: number; rich: number };
+        confidence: number;
+        features?: any; // For debugging
+    } | null> {
+        if (!this.model) {
+            logger.warn('AI model not loaded. Skipping prediction.');
+            return null;
+        }
+
+        const features = await this.extractFeatures(agentId);
+        if (!features) return null;
+
+        const tensor = tf.tensor2d([features]);
+        const prediction = this.model.predict(tensor) as tf.Tensor;
+
+        const probabilityArray = (await prediction.array()) as number[][];
+
+        if (!probabilityArray || !probabilityArray[0] || probabilityArray[0].length !== 3) {
+            tensor.dispose();
+            prediction.dispose();
+            logger.error(`Prediction output invalid for agent ${agentId}`);
+            return null;
+        }
+
+        const [p_low, p_balanced, p_rich] = probabilityArray[0] as [number, number, number];
+        const predictedClass = probabilityArray[0].indexOf(
+            Math.max(...probabilityArray[0])
+        ) as LiquidityClass;
+        const confidence = Math.max(p_low, p_balanced, p_rich);
+
+        tensor.dispose();
+        prediction.dispose();
+
+        return {
+            predictedClass,
+            probabilities: { low: p_low, balanced: p_balanced, rich: p_rich },
+            confidence,
+            features: {
+                float_health_ratio: features[0],
+                days_of_runway: features[1],
+                withdrawal_velocity: features[2] ?? 0 * 100000,
+                deposit_velocity: features[3] ?? 0 * 100000,
+                net_velocity: features[4] ? 0 * 100000
+            }
+        };
+    }
+
+    /**
+     * Trigger prediction and alerts
+     */
+    public async triggerPrediction(agentId: string): Promise<void> {
+        const result = await this.predict(agentId);
+        if (!result) return;
+
+        const { predictedClass, probabilities, confidence, features } = result;
+        const agent = await prisma.agent.findUnique({
+            where: { id: agentId },
+            select: { agent_id: true, full_name: true }
+        });
+
+        if (!agent) return;
+
+        // LOW FLOAT ALERT - High confidence threshold
+        if (predictedClass === LiquidityClass.LOW_E_FLOAT && probabilities.low > 0.75) {
+            logger.warn(`🚨 LOW E-FLOAT Alert for ${agent.agent_id}`, {
+                confidence: `${(probabilities.low * 100).toFixed(1)}%`,
+                days_of_runway: features?.days_of_runway.toFixed(2),
+                probabilities
+            });
+
+            // TODO: Uncomment when ready
+            // await sendLowFloatAlert(
+            //     agent,
+            //     `AI Alert: High risk of low float in 6h (${(probabilities.low * 100).toFixed(0)}% confidence)`
+            // );
+            // await syncAgentATMCache(agentId);
+        }
+
+        // CASH RICH ALERT - Lower threshold (treasury optimization)
+        if (predictedClass === LiquidityClass.CASH_RICH && probabilities.rich > 0.7) {
+            logger.info(`💰 CASH RICH Alert for ${agent.agent_id}`, {
+                confidence: `${(probabilities.rich * 100).toFixed(1)}%`,
+                days_of_runway: features?.days_of_runway.toFixed(2),
+                probabilities
+            });
+
+            // TODO: Uncomment when ready
+            // await sendCashRichAlert(
+            //     agent,
+            //     `AI: Excess float detected (${(probabilities.rich * 100).toFixed(0)}% confidence)`
+            // );
+        }
+
+        // Log all predictions
+        logger.info(`🤖 AI Prediction for ${agent.agent_id}`, {
+            prediction: LiquidityClass[predictedClass],
+            confidence: `${(confidence * 100).toFixed(1)}%`,
+            probabilities: {
+                low: `${(probabilities.low * 100).toFixed(1)}%`,
+                balanced: `${(probabilities.balanced * 100).toFixed(1)}%`,
+                rich: `${(probabilities.rich * 100).toFixed(1)}%`
+            },
+            features
+        });
+    }
+
+    public isModelLoaded(): boolean {
+        return this.model !== null;
+    }
+}

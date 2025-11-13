@@ -22,7 +22,7 @@ export class AuthService {
         });
 
         const hashedPassword = await bcrypt.hash('password', 10);
-        console.log('Hashed password for "password":' + "\n", hashedPassword);
+        // console.log('Hashed password for "password":' + "\n", hashedPassword);
         if (!user || user.status !== 'active') {
             throw { statusCode: 401, message: 'Invalid credentials or user has been suspended', errors: [] };
         }

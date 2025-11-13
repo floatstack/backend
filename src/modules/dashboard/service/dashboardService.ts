@@ -72,15 +72,18 @@ export class DashboardService {
                 const snapshot = agent.float_snapshots;
                 const eFloat = snapshot?.e_float.toNumber() ?? 0;
 
+                const lowerBound = 0.7 * agent.assigned_limit.toNumber();
+
+
                 let status: AgentManagementItem['status'] = 'UNKNOWN';
                 let confidence = 0;
 
                 if (DashboardService.predictionService.isModelLoaded()) {
                     const pred = await DashboardService.predictionService.predict(agent.id);
                     if (pred) {
-                        status = pred.predictedClass === LiquidityClass.LOW_E_FLOAT
+                        status = pred.predictedClass === LiquidityClass.CASH_RICH
                             ? 'LOW_E_FLOAT'
-                            : pred.predictedClass === LiquidityClass.CASH_RICH
+                            : pred.predictedClass === LiquidityClass.LOW_E_FLOAT
                                 ? 'CASH_RICH'
                                 : 'BALANCED';
                         confidence = pred.confidence * 100;
@@ -94,7 +97,7 @@ export class DashboardService {
                     region: null,
                     e_float: eFloat,
                     assigned_limit: agent.assigned_limit.toNumber(),
-                    status,
+                    status: eFloat >= lowerBound? 'LOW_E_FLOAT' : status,
                     confidence,
                     last_activity: agent.last_active_at?.toISOString() || new Date().toISOString(),
                     location: null
@@ -121,7 +124,7 @@ export class DashboardService {
             }),
             prisma.agentFloatSnapshot.findMany({
                 where: { bank_id: bankId },
-                select: { agent_id: true,e_float: true }
+                select: { agent_id: true, e_float: true }
             }),
             prisma.transactionLog.findMany({
                 where: {
@@ -139,7 +142,7 @@ export class DashboardService {
         const lowFloatAgents = agents.filter(a => {
             const snap = snapshots.find(s => s.agent_id === a.id);
             return snap && (snap.e_float.toNumber() / a.assigned_limit.toNumber()) < Number(threshold)
-;
+                ;
         }).length;
 
         let predictedFailures = 0;
