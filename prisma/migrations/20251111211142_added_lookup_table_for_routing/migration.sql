@@ -87,7 +87,7 @@ CREATE TABLE `transaction_logs` (
     `terminal_id` VARCHAR(50) NULL,
     `tx_type` ENUM('withdrawal', 'deposit') NOT NULL,
     `amount` DECIMAL(15, 2) NOT NULL,
-    `tx_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `tx_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     `location_lat` DECIMAL(10, 8) NULL,
     `location_lng` DECIMAL(11, 8) NULL,
     `source` ENUM('webhook', 'api_pull') NOT NULL DEFAULT 'webhook',

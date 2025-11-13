@@ -4,7 +4,6 @@ import JoiBase from "joi";
 import type { ExtensionFactory } from "joi";
 import { errorResponse } from '../utils/response.js';
 import { logger } from '../utils/logger.js';
-import { sendEmail } from './sendEmail.js';
 import pLimit from 'p-limit';
 import crypto from 'crypto';
 import { log } from 'console';

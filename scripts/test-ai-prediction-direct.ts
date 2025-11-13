@@ -69,31 +69,31 @@ async function testPrediction(agentId: string) {
     console.log('');
 
     // Interpretation
-    console.log('💡 INTERPRETATION:');
+    console.log('INTERPRETATION:');
     if (result.predictedClass === LiquidityClass.LOW_E_FLOAT) {
-        console.log('   ⚠️  Agent needs cash injection soon!');
+        console.log('   Agent needs cash injection soon!');
         if (result.confidence > 0.75) {
-            console.log('   🚨 HIGH CONFIDENCE - Immediate action recommended');
+            console.log('  HIGH CONFIDENCE - Immediate action recommended');
         }
     } else if (result.predictedClass === LiquidityClass.BALANCED) {
-        console.log('   ✅ Agent has optimal liquidity');
+        console.log('   Agent has optimal liquidity');
     } else if (result.predictedClass === LiquidityClass.CASH_RICH) {
-        console.log('   💰 Agent has excess cash - consider redistribution');
+        console.log('   Agent has excess cash - consider redistribution');
         if (result.confidence > 0.7) {
-            console.log('   📊 Can be used to refill low-float agents');
+            console.log('   Can be used to refill low-float agents');
         }
     }
     console.log('');
 }
 
 async function testMultipleAgents() {
-    console.log('\n🔍 Testing AI Predictions for Multiple Agents...\n');
+    console.log('\n Testing AI Predictions for Multiple Agents...\n');
 
     const predictionService = PredictionService.getInstance();
     await predictionService.initialize();
 
     if (!predictionService.isModelLoaded()) {
-        console.error('❌ Model not loaded!');
+        console.error(' Model not loaded!');
         return;
     }
 
