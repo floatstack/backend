@@ -3,10 +3,10 @@ import { ObjectSchema, ArraySchema, Schema, StringSchema } from 'joi';
 import Joi from 'joi';
 import sanitizeHtml from 'sanitize-html';
 import { errorResponse } from '../utils/response.js';
+import { AuthRequest } from './authMiddleware.js';
 
-export interface UserRequest extends Request {
+export interface UserRequest extends AuthRequest {
     payload?: any;
-    user?: { user_id: string; permissions: string[] };
 }
 
 export const validateRequestBody =
@@ -15,14 +15,13 @@ export const validateRequestBody =
         target: 'body' | 'query' = 'body',
         skipSanitization: string[] = ['password', 'token', 'otp'],
     ) =>
-        async (req: Request<unknown>, res: Response, next: NextFunction) => {
+        async (req: UserRequest, res: Response, next: NextFunction) => {
             const keys = schema.describe().keys;
             const newSchema: Record<string, Schema> = {};
 
             for (const key in keys) {
                 const fieldSchema = schema.extract(key);
 
-                // Check if the schema is a string schema before calling trim()
                 if ((fieldSchema as StringSchema).trim) {
                     newSchema[key] = (fieldSchema as StringSchema).trim();
                 } else {
@@ -34,19 +33,18 @@ export const validateRequestBody =
 
             const data = target === 'body' ? req.body : req.query;
             const { error, value } = trimmedSchema.validate(data, { stripUnknown: true });
-           
+
             if (error) {
                 return res
                     .status(400)
                     .json(errorResponse(400, `Invalid ${target} parameters`, error.details.map((d) => d.message)));
             }
 
-            // Sanitize string fields with sanitize-html, except skipped fields
             const sanitizedValue = Object.keys(value).reduce((acc, key) => {
                 if (typeof value[key] === 'string' && !skipSanitization.includes(key)) {
                     acc[key] = sanitizeHtml(value[key], {
-                        allowedTags: [], // Strip all HTML tags
-                        allowedAttributes: {}, // No attributes allowed
+                        allowedTags: [],
+                        allowedAttributes: {},
                     });
                 } else {
                     acc[key] = value[key];
@@ -54,6 +52,6 @@ export const validateRequestBody =
                 return acc;
             }, {} as { [key: string]: any });
 
-            (req as UserRequest).payload = sanitizedValue;
+            req.payload = sanitizedValue;
             return next();
         };

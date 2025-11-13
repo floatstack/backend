@@ -7,18 +7,24 @@ import { handlePrismaError } from "../utils/helper.js";
 
 const prisma = new PrismaClient();
 
+// Match JWT payload structure from authService
 interface JwtPayload {
     user_id: string;
-    role: string[];
-    permissions: string[];
+    bank_id: string | null;
+    agent_id: string | null;
+    role: {
+        role_id: string;
+        role: string;
+    };
+    route: string;
 }
 
-interface AuthRequest extends Request {
+export interface AuthRequest extends Request {
     user?: JwtPayload;
 }
 
 export const authMiddleware = (
-    requiredPermissions: string | string[],
+    requiredPermissions: string | string[] = [],
     requiredRoles: string | string[] = []
 ) => {
     return async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -53,7 +59,8 @@ export const authMiddleware = (
             const payload = jwt.verify(
                 token,
                 process.env.JWT_SECRET || "access-secret"
-            ) as unknown as JwtPayload;
+            ) as JwtPayload;
+
             if (!payload.user_id || !payload.role) {
                 return res
                     .status(401)
@@ -88,11 +95,9 @@ export const authMiddleware = (
                 ? requiredRoles
                 : [requiredRoles];
 
-            // Check if user has at least one required role
-            if (rolesToCheck.length > 0) {
-                const hasRequiredRole = rolesToCheck.some((role) =>
-                    payload.role.includes(role)
-                );
+            // Check if user has the required role
+            if (rolesToCheck.length > 0 && !rolesToCheck.includes('')) {
+                const hasRequiredRole = rolesToCheck.includes(payload.role.role);
                 if (!hasRequiredRole) {
                     return res
                         .status(403)
@@ -103,8 +108,6 @@ export const authMiddleware = (
                         );
                 }
             }
-
-
 
             req.user = payload;
             next();
