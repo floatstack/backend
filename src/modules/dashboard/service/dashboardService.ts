@@ -2,6 +2,7 @@ import { prisma } from '../../../config/database.js';
 import redisClient from '../../../config/redis.js';
 import { PredictionService, LiquidityClass } from '../../prediction/service/predictionService.js';
 import { logger } from '../../../utils/logger.js';
+import { Decimal } from '@prisma/client/runtime/library';
 
 export interface AgentManagementItem {
     agent_id: string;
@@ -97,7 +98,7 @@ export class DashboardService {
                     region: null,
                     e_float: eFloat,
                     assigned_limit: agent.assigned_limit.toNumber(),
-                    status: eFloat >= lowerBound? 'LOW_E_FLOAT' : status,
+                    status: eFloat >= lowerBound ? 'LOW_E_FLOAT' : status,
                     confidence,
                     last_activity: agent.last_active_at?.toISOString() || new Date().toISOString(),
                     location: null
@@ -117,6 +118,7 @@ export class DashboardService {
             return JSON.parse(cached);
         }
 
+        // Fetch all needed data in parallel
         const [agents, snapshots, txToday, config] = await Promise.all([
             prisma.agent.findMany({
                 where: { bank_id: bankId, status: 'active' },
@@ -137,19 +139,36 @@ export class DashboardService {
         ]);
 
         const totalFloat = snapshots.reduce((sum, s) => sum + s.e_float.toNumber(), 0);
-        const threshold = config?.threshold_low || 0.7;
+        const threshold: Decimal = config?.threshold_low ?? new Decimal(0.7);
 
-        const lowFloatAgents = agents.filter(a => {
-            const snap = snapshots.find(s => s.agent_id === a.id);
-            return snap && (snap.e_float.toNumber() / a.assigned_limit.toNumber()) < Number(threshold)
-                ;
-        }).length;
+        // Calculate low float agents using AI + threshold logic
+        let lowFloatAgents = 0;
 
+        for (const agent of agents) {
+            const snap = snapshots.find(s => s.agent_id === agent.id);
+            if (!snap) continue;
+
+            const Efloat = snap.e_float.toNumber();
+            const lowerBound = threshold.toNumber() * agent.assigned_limit.toNumber();
+
+            let predictedLow = false;
+            if (DashboardService.predictionService.isModelLoaded()) {
+                const result = await DashboardService.predictionService.predict(agent.id);
+                predictedLow = result?.predictedClass === LiquidityClass.LOW_E_FLOAT && result.probabilities.rich > 0.75;
+            }
+
+            // Count agent if either predicted low OR below threshold
+            if (predictedLow || Efloat < lowerBound) {
+                lowFloatAgents++;
+            }
+        }
+
+        // Predicted failures (AI-only)
         let predictedFailures = 0;
         if (DashboardService.predictionService.isModelLoaded()) {
             for (const agent of agents) {
-                const pred = await DashboardService.predictionService.predict(agent.id);
-                if (pred?.predictedClass === LiquidityClass.LOW_E_FLOAT && pred.probabilities.low > 0.75) {
+                const result = await DashboardService.predictionService.predict(agent.id);
+                if (result?.predictedClass === LiquidityClass.LOW_E_FLOAT && result.probabilities.low > 0.75) {
                     predictedFailures++;
                 }
             }
@@ -164,7 +183,7 @@ export class DashboardService {
             total_agents: agents.length,
             active_agents: agents.filter(a => a.last_active_at && Date.now() - a.last_active_at.getTime() < 6 * 3600000).length,
             total_float_in_circulation: totalFloat,
-            agents_below_threshold: lowFloatAgents,
+            agents_below_threshold: lowFloatAgents, // Updated logic
             critical_alerts: predictedFailures,
             predicted_float_failures_6h: predictedFailures,
             total_transactions_today: totalTx,
@@ -174,4 +193,5 @@ export class DashboardService {
         await redisClient.set(cacheKey, JSON.stringify(summary), { EX: 30 });
         return summary;
     }
+
 }

@@ -22,10 +22,12 @@ export const getAgentManagement = async (req: UserRequest, res: Response) => {
     }
 };
 
-export const getBankDashboard = async (req: Request, res: Response) => {
+export const getBankDashboard = async (req: UserRequest, res: Response) => {
     try {
-        const { bank_id } = req.query as string | any;
-        const data = await DashboardService.getBankSummary(bank_id);
+        const bank_id = req.user?.bank_id;
+        if (!bank_id) {
+            return res.status(400).json(errorResponse(400, 'Unauthenticated user', []));
+        } const data = await DashboardService.getBankSummary(bank_id);
         return res.json(successResponse(200, 'Dashboard summary', data));
     } catch (error: any) {
         logger.error('getBankDashboard failed', { error });
