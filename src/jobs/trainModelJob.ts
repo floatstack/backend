@@ -1,6 +1,6 @@
 import * as tf from '@tensorflow/tfjs-node';
 import { logger } from '../utils/logger.js';
-import { PredictionService } from '../modules/prediction/service/predictionService.ts.old';
+import { PredictionService } from '../modules/prediction/service/predictionService.js';
 import { loadTrainingData } from './dataGenerator.js';
 import path from 'path';
 import fs from 'fs/promises';
