@@ -191,10 +191,13 @@ export class webhookService {
                 return null;
             }
 
-            const response = await axios.get(`${bank.api_base_url}/${agentId}`, {
-                headers: { 'Authorization': `Bearer ${decrypt(bank.api_key ?? '')}` },
-                timeout: 5000
-            });
+            const response = await axios.get<{ balance?: number; e_float?: number }>(
+                `${bank.api_base_url}/${agentId}`,
+                {
+                    headers: { 'Authorization': `Bearer ${decrypt(bank.api_key ?? '')}` },
+                    timeout: 5000
+                }
+            );
 
             const balance = response.data.balance ?? response.data.e_float;
             if (balance !== undefined) {
