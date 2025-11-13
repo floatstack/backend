@@ -21,7 +21,7 @@ const v1SwaggerOptions: swaggerJSDoc.Options = {
         ],
         servers: [
             { url: process.env.DEVELOPMENT_URL || 'http://localhost:3000/api', description: 'Development (v1)' },
-            { url: process.env.STAGING_URL || 'https://0526cbded89b.ngrok-free.app/api', description: 'Staging (v1)' },
+            { url: process.env.STAGING_URL || 'https://floatstack.onrender.com/api', description: 'Staging (v1)' },
         ],
         components: {
             schemas: {
