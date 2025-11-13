@@ -73,7 +73,7 @@ export const authMiddleware = (
                     );
             }
 
-            // Validate user exists and is active
+            // Validate user exists and is active active
             const user = await prisma.user.findUnique({
                 where: { id: payload.user_id },
                 select: { id: true, status: true },
